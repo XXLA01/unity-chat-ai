@@ -21,3 +21,9 @@ Thumbs.db
 
 # Asset Store
 Assets/AssetStoreTools*
+
+# Sensitive config (contains API keys/tokens)
+Assets/ChatAI/Configs/CozeConfig.asset
+
+# Large model files
+Assets/StreamingAssets/*.zip
