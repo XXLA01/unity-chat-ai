@@ -40,6 +40,28 @@ namespace ChatAI.Core
         [Tooltip("TTS 音色名称（v2模型需带_v2后缀）")]
         public string ttsVoice = "longxiaochun_v2";
 
+        [Header("唤醒词配置")]
+        [Tooltip("唤醒关键词（支持多个，如 \"你好小童\"、\"你好 小童\"）")]
+        public string[] wakeKeywords = { "你好小童", "你好 小童" };
+
+        [Tooltip("打断关键词（TTS 播报期间检测到这些词会立即停止播放）")]
+        public string[] interruptKeywords = { "停止", "停一下", "别说了", "闭嘴" };
+
+        [Tooltip("休眠关键词（检测到这些词后退出对话模式，需重新唤醒）")]
+        public string[] sleepKeywords = { "退下", "休眠", "再见", "拜拜", "下去吧" };
+
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        [Tooltip("唤醒词识别置信度阈值（仅 Windows KeywordRecognizer 有效）")]
+        public UnityEngine.Windows.Speech.ConfidenceLevel wakeWordConfidence = UnityEngine.Windows.Speech.ConfidenceLevel.Low;
+#endif
+
+        [Header("Vosk 离线语音模型（非 Windows 平台唤醒）")]
+        [Tooltip("Vosk 模型文件名（zip 格式，放在 StreamingAssets 中）")]
+        public string voskModelPath = "vosk-model-small-cn-0.22.zip";
+
+        [Tooltip("强制在所有平台使用 Vosk 唤醒（用于测试，Windows 上默认使用 KeywordRecognizer）")]
+        public bool useVoskEverywhere = false;
+
         [Header("对话参数")]
         [Tooltip("对话超时时间（秒），超时后自动回到待机状态")]
         public float conversationTimeout = 30f;

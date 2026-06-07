@@ -13,15 +13,6 @@ namespace ChatAI.DebugTools
     public class DebugChatUI : MonoBehaviour
     {
         // ==================== 序列化 UI 引用 ====================
-        [Header("配置面板")]
-        [SerializeField] private GameObject configPanel;
-        [SerializeField] private InputField tokenInput;
-        [SerializeField] private InputField botIdInput;
-        [SerializeField] private InputField baseUrlInput;
-        [SerializeField] private InputField asrKeyInput;
-        [SerializeField] private Button connectBtn;
-        [SerializeField] private Button collapseBtn;
-
         [Header("聊天区域")]
         [SerializeField] private ScrollRect scrollRect;
         [SerializeField] private RectTransform chatContent;
@@ -39,6 +30,18 @@ namespace ChatAI.DebugTools
         [Header("状态栏")]
         [SerializeField] private Text statusText;
 
+        [Header("消息气泡预制体")]
+        [SerializeField, Tooltip("拖入消息气泡预制体，预制体内需包含一个 Text 组件")]
+        private GameObject messageBubblePrefab;
+
+        [Header("气泡颜色")]
+        [SerializeField, Tooltip("用户消息气泡颜色")]
+        private Color userBubbleColor = new Color(0.10f, 0.40f, 0.78f);
+        [SerializeField, Tooltip("AI 回复气泡颜色")]
+        private Color aiBubbleColor = new Color(0.55f, 0.27f, 0.68f);
+        [SerializeField, Tooltip("系统消息气泡颜色")]
+        private Color systemBubbleColor = new Color(0.35f, 0.35f, 0.35f);
+
         // ==================== 颜色 ====================
         private static readonly Color StatusIdle      = new Color(0.4f, 0.4f, 0.4f);
         private static readonly Color StatusListening = new Color(0.3f, 0.8f, 0.4f);
@@ -46,19 +49,12 @@ namespace ChatAI.DebugTools
         private static readonly Color StatusRecording = new Color(1.0f, 0.3f, 0.3f);
         private static readonly Color StatusASR       = new Color(0.6f, 0.5f, 0.9f);
         private static readonly Color StatusError     = new Color(1.0f, 0.3f, 0.3f);
-        private static readonly Color UserBubble      = new Color(0.10f, 0.40f, 0.78f);
-        private static readonly Color AIBubble        = new Color(0.20f, 0.20f, 0.24f);
-        private static readonly Color SystemBubble    = new Color(0.25f, 0.25f, 0.15f, 0.6f);
         private static readonly Color MicBtnActive    = new Color(0.85f, 0.20f, 0.20f);
         private static readonly Color MicBtnNormal    = new Color(0.15f, 0.50f, 0.85f);
 
-        private const string DefaultBaseUrl = "https://api.coze.cn";
-
-        private Font _font;
         private Text _currentAIText;
         private GameObject _currentAIBubble;
         private string _fullAIResponse = "";
-        private bool _configCollapsed;
 
         // ==================== 语音状态 ====================
         private bool _voiceModeEnabled;
@@ -87,6 +83,8 @@ namespace ChatAI.DebugTools
         private System.Text.StringBuilder _ttsSentenceBuffer = new System.Text.StringBuilder();
         private bool _ttsStreamStarted;
         private int _ttsRevealedLength;   // 已随语音显示到 _fullAIResponse 的哪个位置
+        private float _ttsPlaybackStartTime; // TTS 开始播放的时间（打断防回声器用）
+        private bool _ttsInterrupted;         // 本轮 TTS 是否已被打断（阻止后续 chunk 继续入队）
 
         // 事件委托引用（用于正确取消订阅）
         private Action<string> _onConversationCreated;
@@ -95,10 +93,6 @@ namespace ChatAI.DebugTools
 
         private void Start()
         {
-            _font = GetChineseFont();
-
-            if (connectBtn != null) connectBtn.onClick.AddListener(OnConnectClicked);
-            if (collapseBtn != null) collapseBtn.onClick.AddListener(OnToggleConfig);
             if (sendBtn != null) sendBtn.onClick.AddListener(OnSendClicked);
             if (clearBtn != null) clearBtn.onClick.AddListener(OnClearClicked);
             if (messageInput != null) messageInput.onEndEdit.AddListener(OnInputEndEdit);
@@ -114,6 +108,15 @@ namespace ChatAI.DebugTools
             // 初始禁用麦克风按钮
             if (micBtn != null) micBtn.interactable = false;
 
+            // 默认开启语音播报（需要 DashScope API Key）
+            var boot = DebugChatBootstrapper.Instance;
+            if (boot != null && !string.IsNullOrEmpty(boot.Config.dashScopeApiKey))
+            {
+                _ttsEnabled = true;
+                var ttsBtnText = ttsToggleBtn?.GetComponentInChildren<Text>();
+                if (ttsBtnText != null) ttsBtnText.text = "关闭播报";
+            }
+
             // 检查配置是否已预设，自动连接
             var bootstrapper = DebugChatBootstrapper.Instance;
             if (bootstrapper != null && bootstrapper.Config != null && bootstrapper.Config.IsValid())
@@ -122,22 +125,14 @@ namespace ChatAI.DebugTools
             }
             else
             {
-                SetStatus("就绪 - 请在配置面板输入 Token 和 Bot ID", StatusIdle);
-                AddSystemMessage("未检测到预设配置。请在上方输入 Coze API Token 和 Bot ID，然后点击「连接」。");
+                SetStatus("未检测到配置 - 请在 CozeConfig 资源中填写 Token 和 Bot ID", StatusIdle);
+                AddSystemMessage("未检测到预设配置。请在 Inspector 中的 CozeConfig 资源上填写 CozeAPI Token 和 Bot ID。");
             }
         }
 
         private void AutoConnect(DebugChatBootstrapper bootstrapper)
         {
-            if (!_configCollapsed)
-                OnToggleConfig();
-
             AddSystemMessage($"检测到预设配置 (Bot: {bootstrapper.Config.botId})，正在自动连接...");
-
-            if (tokenInput != null) tokenInput.text = bootstrapper.Config.apiToken;
-            if (botIdInput != null) botIdInput.text = bootstrapper.Config.botId;
-            if (baseUrlInput != null) baseUrlInput.text = bootstrapper.Config.apiBaseUrl;
-            if (asrKeyInput != null) asrKeyInput.text = bootstrapper.Config.dashScopeApiKey;
 
             bootstrapper.ChatService.CreateConversation();
             SetStatus("对话已连接", StatusListening);
@@ -145,15 +140,7 @@ namespace ChatAI.DebugTools
             bool hasASR = !string.IsNullOrEmpty(bootstrapper.Config.dashScopeApiKey);
             AddSystemMessage(hasASR
                 ? "已自动连接，可直接输入消息或开启语音模式。"
-                : "已自动连接。如需语音功能，请在配置面板输入 DashScope API Key。");
-        }
-
-        private Font GetChineseFont()
-        {
-            Font f = Font.CreateDynamicFontFromOSFont("Microsoft YaHei", 14);
-            if (f != null) return f;
-            f = Font.CreateDynamicFontFromOSFont("Arial", 14);
-            return f ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+                : "已自动连接。如需语音功能，请在 CozeConfig 资源中配置 DashScope API Key。");
         }
 
         // ==================== 服务事件绑定 ====================
@@ -188,34 +175,13 @@ namespace ChatAI.DebugTools
                 bootstrapper.TTSService.OnSentencePlaybackStarted += OnTTSSentenceStarted;
                 bootstrapper.TTSService.OnError += OnTTSError;
             }
-        }
 
-        // ==================== 文字连接 ====================
-
-        private void OnConnectClicked()
-        {
-            string token = tokenInput != null ? tokenInput.text.Trim() : "";
-            string botId = botIdInput != null ? botIdInput.text.Trim() : "";
-            string baseUrl = baseUrlInput != null ? baseUrlInput.text.Trim() : "";
-            string asrKey = asrKeyInput != null ? asrKeyInput.text.Trim() : "";
-
-            if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(botId))
+            // Wake word 打断事件
+            if (bootstrapper.WakeWord != null)
             {
-                AddSystemMessage("[错误] 请输入 API Token 和 Bot ID");
-                SetStatus("错误: 配置不完整", StatusError);
-                return;
+                bootstrapper.WakeWord.OnInterruptDetected += HandleInterrupt;
+                bootstrapper.WakeWord.OnSleepDetected += HandleSleep;
             }
-
-            var bootstrapper = DebugChatBootstrapper.Instance;
-            if (bootstrapper == null) return;
-
-            bootstrapper.UpdateConfig(token, botId, string.IsNullOrEmpty(baseUrl) ? DefaultBaseUrl : baseUrl);
-            if (!string.IsNullOrEmpty(asrKey))
-                bootstrapper.UpdateASRConfig(asrKey);
-
-            bootstrapper.ChatService.CreateConversation();
-            SetStatus("对话已连接", StatusListening);
-            AddSystemMessage($"已连接 Coze 对话 (Bot: {botId})");
         }
 
         // ==================== 语音模式切换 ====================
@@ -237,7 +203,7 @@ namespace ChatAI.DebugTools
                 var bootstrapper = DebugChatBootstrapper.Instance;
                 if (bootstrapper == null || string.IsNullOrEmpty(bootstrapper.Config.dashScopeApiKey))
                 {
-                    AddSystemMessage("[错误] 请先在配置面板输入 DashScope API Key 以启用语音识别");
+                    AddSystemMessage("[错误] 请先在 CozeConfig 资源中配置 DashScope API Key 以启用语音识别");
                     _voiceModeEnabled = false;
                     return;
                 }
@@ -519,6 +485,11 @@ namespace ChatAI.DebugTools
 
         private void OnASRResult(string transcript)
         {
+            // ASR 完成，恢复 Vosk 监听（录音期间麦克风被占用）
+            var wakeBoot = DebugChatBootstrapper.Instance;
+            if (wakeBoot?.WakeWord != null && wakeBoot.WakeWord.IsPaused)
+                wakeBoot.WakeWord.ResumeListening();
+
             if (string.IsNullOrEmpty(transcript))
             {
                 if (_inConversationMode)
@@ -545,10 +516,15 @@ namespace ChatAI.DebugTools
             _ttsSentenceBuffer.Clear();
             _ttsStreamStarted = false;
             _ttsRevealedLength = 0;
+            _ttsInterrupted = false;
 
-            // 停止上一轮 TTS 播报
+            // 停止上一轮 TTS 播报，并重置状态以允许新一轮入队
             var tts = DebugChatBootstrapper.Instance?.TTSService;
-            if (tts != null) tts.StopSpeaking();
+            if (tts != null)
+            {
+                tts.StopSpeaking();
+                tts.ResetForNewTurn();
+            }
 
             CreateAIBubble();
 
@@ -561,6 +537,11 @@ namespace ChatAI.DebugTools
 
         private void OnASRError(string error)
         {
+            // ASR 失败，恢复 Vosk 监听（录音期间麦克风被占用）
+            var wakeBoot = DebugChatBootstrapper.Instance;
+            if (wakeBoot?.WakeWord != null && wakeBoot.WakeWord.IsPaused)
+                wakeBoot.WakeWord.ResumeListening();
+
             AddSystemMessage($"[语音识别] 失败: {error}");
             SetStatus("语音识别失败", StatusError);
         }
@@ -577,12 +558,13 @@ namespace ChatAI.DebugTools
                 var bootstrapper = DebugChatBootstrapper.Instance;
                 if (bootstrapper == null || string.IsNullOrEmpty(bootstrapper.Config.dashScopeApiKey))
                 {
-                    AddSystemMessage("[错误] 请先在配置面板输入 DashScope API Key 以启用语音播报");
+                    AddSystemMessage("[错误] 请先在 CozeConfig 资源中配置 DashScope API Key 以启用语音播报");
                     _ttsEnabled = false;
                     return;
                 }
 
                 if (btnText != null) btnText.text = "关闭播报";
+                _ttsInterrupted = false; // 重新开启 TTS 时清除打断标志
                 AddSystemMessage("语音播报已开启，AI 回复将自动朗读。");
             }
             else
@@ -595,6 +577,7 @@ namespace ChatAI.DebugTools
 
                 _ttsSentenceBuffer.Clear();
                 _ttsStreamStarted = false;
+                _ttsPlaybackStartTime = 0f;
 
                 // 关闭 TTS 时，立即显示所有尚未显示的文字
                 RevealAllPendingText();
@@ -606,11 +589,8 @@ namespace ChatAI.DebugTools
         private void OnTTSPlaybackStarted()
         {
             SetStatus("AI 语音播报中...", StatusListening);
-
-            // TTS 播报时暂停唤醒词检测，防止回声误触发
-            var bootstrapper = DebugChatBootstrapper.Instance;
-            if (bootstrapper?.WakeWord != null && _wakeWordEnabled)
-                bootstrapper.WakeWord.PauseListening();
+            _ttsPlaybackStartTime = Time.time;
+            // 注意：不再暂停 Vosk，保持监听以支持打断词检测
         }
 
         /// <summary>
@@ -623,6 +603,8 @@ namespace ChatAI.DebugTools
             // 将 _fullAIResponse 中尚未显示的部分追加到气泡，最多显示到 _ttsRevealedLength
             int displayUpTo = Mathf.Min(_ttsRevealedLength, _fullAIResponse.Length);
             string displayText = _fullAIResponse.Substring(0, displayUpTo);
+            // 清除括号动作描写，UI 只展示实际朗读的内容
+            displayText = CleanTextForTTS(displayText);
             _currentAIText.text = displayText;
             Canvas.ForceUpdateCanvases();
             ScrollToBottom();
@@ -642,11 +624,7 @@ namespace ChatAI.DebugTools
             {
                 string statusMsg = _voiceModeEnabled ? "语音模式 - 说\"你好小童\"唤醒" : "就绪";
                 SetStatus(statusMsg, StatusListening);
-
-                // 非对话模式：恢复唤醒词检测
-                var bootstrapper = DebugChatBootstrapper.Instance;
-                if (bootstrapper?.WakeWord != null && _wakeWordEnabled)
-                    bootstrapper.WakeWord.ResumeListening();
+                // Vosk 在 TTS 期间保持活跃，无需恢复
             }
         }
 
@@ -655,6 +633,92 @@ namespace ChatAI.DebugTools
             AddSystemMessage($"[语音播报] 失败: {error}");
             // TTS 出错时，确保文字最终还是会被显示出来
             RevealAllPendingText();
+        }
+
+        /// <summary>
+        /// 打断处理：用户说"停止"等关键词时，立即停止 TTS 播报
+        /// </summary>
+        private void HandleInterrupt()
+        {
+            var bootstrapper = DebugChatBootstrapper.Instance;
+            bool isSpeaking = bootstrapper?.TTSService != null && bootstrapper.TTSService.IsSpeaking;
+            float elapsed = Time.time - _ttsPlaybackStartTime;
+
+            if (!isSpeaking)
+                return;
+
+            // 防回声：TTS 刚开始 1.5 秒内忽略打断（可能是 AI 自己的声音被识别为打断词）
+            if (elapsed < 1.5f)
+                return;
+
+            UnityEngine.Debug.Log("[打断] 用户打断 AI 播报");
+            bootstrapper.TTSService.StopSpeaking();
+            _ttsInterrupted = true; // 阻止后续 SSE chunk 继续入队 TTS
+
+            // 显示尚未显示的文字
+            RevealAllPendingText();
+
+            AddSystemMessage("[打断] 已停止播报");
+
+            // 重置对话空闲计时器，等待用户继续说话
+            _conversationIdleTimer = 0f;
+
+            if (_inConversationMode)
+            {
+                SetStatus("聆听中... 请说话", StatusListening);
+                // StopSpeaking 会终止协程，OnTTSPlaybackFinished 不会触发，需手动启动新一轮录音
+                AutoStartConversationRecording();
+            }
+            else
+            {
+                string statusMsg = _voiceModeEnabled ? "语音模式 - 说\"你好小童\"唤醒" : "就绪";
+                SetStatus(statusMsg, StatusListening);
+            }
+        }
+
+        /// <summary>
+        /// 休眠处理：停止 TTS、停止录音、退出对话模式、回到唤醒词待命
+        /// </summary>
+        private void HandleSleep()
+        {
+            var bootstrapper = DebugChatBootstrapper.Instance;
+
+            // 停止正在播放的 TTS
+            if (bootstrapper?.TTSService != null && bootstrapper.TTSService.IsSpeaking)
+            {
+                bootstrapper.TTSService.StopSpeaking();
+                _ttsInterrupted = true;
+            }
+
+            // 停止正在进行的录音（丢弃音频，不发送给 ASR）
+            if (_isRecording)
+            {
+                _isRecording = false;
+                Microphone.End(_micDevice);
+                _recordingClip = null;
+                var micBtnText = micBtn?.GetComponentInChildren<Text>();
+                if (micBtnText != null) micBtnText.text = "说话";
+                var micBtnImg = micBtn?.GetComponent<Image>();
+                if (micBtnImg != null) micBtnImg.color = MicBtnNormal;
+            }
+
+            // 退出对话模式
+            _inConversationMode = false;
+            _conversationIdleTimer = 0f;
+
+            // 确保唤醒词检测器在监听状态（可能因录音而暂停）
+            if (bootstrapper?.WakeWord != null)
+            {
+                if (bootstrapper.WakeWord.IsPaused)
+                    bootstrapper.WakeWord.ResumeListening();
+                else if (!bootstrapper.WakeWord.IsListening)
+                    bootstrapper.WakeWord.StartListening();
+            }
+
+            AddSystemMessage("[休眠] 已休眠，说唤醒词重新唤醒");
+            SetStatus("语音模式 - 说\"你好小童\"唤醒", StatusIdle);
+
+            UnityEngine.Debug.Log("[Sleep] 进入休眠状态");
         }
 
         /// <summary>
@@ -685,7 +749,8 @@ namespace ChatAI.DebugTools
         {
             if (_currentAIText != null && _fullAIResponse.Length > 0)
             {
-                _currentAIText.text = _fullAIResponse;
+                // 清除括号动作描写，UI 只展示实际朗读的内容
+                _currentAIText.text = CleanTextForTTS(_fullAIResponse);
                 _ttsRevealedLength = _fullAIResponse.Length;
                 Canvas.ForceUpdateCanvases();
                 ScrollToBottom();
@@ -764,10 +829,15 @@ namespace ChatAI.DebugTools
             _ttsSentenceBuffer.Clear();
             _ttsStreamStarted = false;
             _ttsRevealedLength = 0;
+            _ttsInterrupted = false;
 
-            // 停止上一轮 TTS 播报
+            // 停止上一轮 TTS 播报，并重置状态以允许新一轮入队
             var tts = DebugChatBootstrapper.Instance?.TTSService;
-            if (tts != null) tts.StopSpeaking();
+            if (tts != null)
+            {
+                tts.StopSpeaking();
+                tts.ResetForNewTurn();
+            }
 
             CreateAIBubble();
             bootstrapper.ChatService.SendMessage(msg);
@@ -786,28 +856,13 @@ namespace ChatAI.DebugTools
             AddSystemMessage("对话已清空。");
         }
 
-        private void OnToggleConfig()
-        {
-            _configCollapsed = !_configCollapsed;
-            if (configPanel == null) return;
-
-            var le = configPanel.GetComponent<LayoutElement>();
-            if (le != null) le.preferredHeight = _configCollapsed ? 30 : 190;
-
-            for (int i = 1; i < configPanel.transform.childCount; i++)
-                configPanel.transform.GetChild(i).gameObject.SetActive(!_configCollapsed);
-
-            var btnText = collapseBtn?.GetComponentInChildren<Text>();
-            if (btnText != null) btnText.text = _configCollapsed ? "展开 ▶" : "收起 ▼";
-        }
-
         // ==================== 消息流式处理 ====================
 
         private void OnTextChunk(string chunk)
         {
             _fullAIResponse += chunk;
 
-            if (_ttsEnabled)
+            if (_ttsEnabled && !_ttsInterrupted)
             {
                 // TTS 开启时：文字先缓存，不立即显示，等语音播到哪句再显示到哪句
                 if (!_ttsStreamStarted)
@@ -815,7 +870,10 @@ namespace ChatAI.DebugTools
                     // SSE 流开始，确保 TTS 队列处于干净状态
                     var bootstrapper = DebugChatBootstrapper.Instance;
                     if (bootstrapper?.TTSService != null)
+                    {
                         bootstrapper.TTSService.StopSpeaking();
+                        bootstrapper.TTSService.ResetForNewTurn();
+                    }
                     _ttsSentenceBuffer.Clear();
                     _ttsStreamStarted = true;
                     SetStatus("AI 思考中，正在准备语音...", StatusThinking);
@@ -870,10 +928,10 @@ namespace ChatAI.DebugTools
             }
             else
             {
-                // TTS 未开启：立即显示文字
+                // TTS 未开启或已被打断：立即显示文字（清除括号动作描写）
                 if (_currentAIText != null)
                 {
-                    _currentAIText.text = _fullAIResponse;
+                    _currentAIText.text = CleanTextForTTS(_fullAIResponse);
                     Canvas.ForceUpdateCanvases();
                     ScrollToBottom();
                 }
@@ -884,31 +942,24 @@ namespace ChatAI.DebugTools
         {
             // TTS 未启用时才立即显示全部文字（TTS 启用时由 OnTTSSentenceStarted 逐句显示）
             if (!_ttsEnabled && _currentAIText != null && string.IsNullOrEmpty(_currentAIText.text))
-                _currentAIText.text = fullText;
+                _currentAIText.text = CleanTextForTTS(fullText);
 
             string statusMsg = _voiceModeEnabled ? "语音模式 - 说\"你好小童\"唤醒" : "就绪";
             SetStatus(statusMsg, StatusListening);
-            UnityEngine.Debug.Log($"[DebugChat] AI 完整回复:\n{fullText}");
 
-            // 流式 TTS：将尚未入队的剩余文字作为最后一个句子刷入
-            if (_ttsEnabled)
+            // 流式 TTS：将尚未入队的剩余文字作为最后一个句子刷入（打断后跳过）
+            if (_ttsEnabled && !_ttsInterrupted)
             {
                 FlushTTSSentenceBuffer();
                 _ttsStreamStarted = false;
                 // 唤醒词恢复会在 OnTTSPlaybackFinished 中处理
             }
-            else if (_inConversationMode)
+            else if (!_ttsEnabled && _inConversationMode)
             {
                 // TTS 未启用但在对话模式，自动开始新一轮录音
                 AutoStartConversationRecording();
             }
-            else if (_wakeWordEnabled)
-            {
-                // 非对话模式：恢复唤醒词监听
-                var bootstrapper = DebugChatBootstrapper.Instance;
-                if (bootstrapper?.WakeWord != null)
-                    bootstrapper.WakeWord.ResumeListening();
-            }
+            // Vosk 在 TTS 期间保持活跃，无需额外恢复
         }
 
         private void OnServiceError(string error)
@@ -926,64 +977,61 @@ namespace ChatAI.DebugTools
 
         private void AddUserMessage(string text)
         {
-            CreateBubble("UserMsg", text, UserBubble, Color.white, 14, true);
+            var bubble = InstantiateBubble();
+            if (bubble != null)
+            {
+                ApplyBubbleColor(bubble, userBubbleColor);
+                var txt = bubble.GetComponentInChildren<Text>();
+                if (txt != null) { txt.text = text; txt.color = Color.white; }
+            }
         }
 
         private void AddSystemMessage(string text)
         {
-            CreateBubble("SystemMsg", text, SystemBubble, new Color(0.6f, 0.6f, 0.6f), 12, false);
+            var bubble = InstantiateBubble();
+            if (bubble != null)
+            {
+                ApplyBubbleColor(bubble, systemBubbleColor);
+                var txt = bubble.GetComponentInChildren<Text>();
+                if (txt != null) { txt.text = text; txt.color = new Color(0.75f, 0.75f, 0.75f); }
+            }
         }
 
         private void CreateAIBubble()
         {
-            _currentAIBubble = CreateBubble("AIResponse", "", AIBubble, Color.white, 14, false);
-            _currentAIText = _currentAIBubble.GetComponentInChildren<Text>();
+            _currentAIBubble = InstantiateBubble();
+            if (_currentAIBubble != null)
+            {
+                ApplyBubbleColor(_currentAIBubble, aiBubbleColor);
+                _currentAIText = _currentAIBubble.GetComponentInChildren<Text>();
+                if (_currentAIText != null) _currentAIText.color = Color.white;
+            }
+            else
+            {
+                _currentAIText = null;
+            }
         }
 
-        private GameObject CreateBubble(string objName, string text, Color bgColor, Color textColor,
-                                         int fontSize, bool alignRight)
+        /// <summary>
+        /// 给气泡的 Image 组件上色
+        /// </summary>
+        private void ApplyBubbleColor(GameObject bubble, Color color)
         {
-            if (chatContent == null) return null;
+            var img = bubble.GetComponentInChildren<Image>();
+            if (img != null) img.color = color;
+        }
 
-            var row = new GameObject(objName, typeof(RectTransform));
-            row.transform.SetParent(chatContent, false);
-            var rowHlg = row.AddComponent<HorizontalLayoutGroup>();
-            rowHlg.childControlWidth = true;
-            rowHlg.childControlHeight = true;
-            rowHlg.childForceExpandWidth = true;
-            rowHlg.childForceExpandHeight = true;
+        /// <summary>
+        /// 从预制体实例化一个消息气泡并添加到聊天区域
+        /// </summary>
+        private GameObject InstantiateBubble()
+        {
+            if (chatContent == null || messageBubblePrefab == null) return null;
 
-            var bubbleGo = new GameObject("Bubble", typeof(RectTransform));
-            bubbleGo.transform.SetParent(row.transform, false);
-            bubbleGo.AddComponent<Image>().color = bgColor;
-            var bubbleLe = bubbleGo.AddComponent<LayoutElement>();
-            bubbleLe.flexibleWidth = 1;
-            bubbleLe.preferredWidth = 600;
-            bubbleLe.minWidth = 60;
-
-            var bubbleVlg = bubbleGo.AddComponent<VerticalLayoutGroup>();
-            bubbleVlg.childControlWidth = true;
-            bubbleVlg.childControlHeight = true;
-            bubbleVlg.childForceExpandWidth = true;
-            bubbleVlg.childForceExpandHeight = true;
-            bubbleVlg.padding = new RectOffset(12, 12, 8, 8);
-
-            bubbleGo.AddComponent<ContentSizeFitter>().verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
-            var textGo = new GameObject("Text", typeof(RectTransform));
-            textGo.transform.SetParent(bubbleGo.transform, false);
-            var textComp = textGo.AddComponent<Text>();
-            textComp.text = text;
-            textComp.font = _font;
-            textComp.fontSize = fontSize;
-            textComp.color = textColor;
-            textComp.alignment = alignRight ? TextAnchor.UpperRight : TextAnchor.UpperLeft;
-            textComp.horizontalOverflow = HorizontalWrapMode.Wrap;
-            textComp.gameObject.AddComponent<LayoutElement>().flexibleWidth = 1;
-
+            var go = Instantiate(messageBubblePrefab, chatContent);
             Canvas.ForceUpdateCanvases();
             ScrollToBottom();
-            return bubbleGo;
+            return go;
         }
 
         // ==================== 工具 ====================
@@ -1033,6 +1081,8 @@ namespace ChatAI.DebugTools
                 if (bootstrapper.WakeWord != null)
                 {
                     bootstrapper.WakeWord.OnWakeWordDetected -= OnWakeWordDetected;
+                    bootstrapper.WakeWord.OnInterruptDetected -= HandleInterrupt;
+                    bootstrapper.WakeWord.OnSleepDetected -= HandleSleep;
                     bootstrapper.WakeWord.StopListening();
                 }
             }

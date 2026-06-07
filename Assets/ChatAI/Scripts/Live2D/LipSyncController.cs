@@ -87,10 +87,7 @@ namespace ChatAI.Live2D
             */
 
             // 调试输出（开发阶段）
-            if (mouthOpenValue > 0.1f)
-            {
-                Debug.Log($"[LipSync] 口型值: {mouthOpenValue:F2}");
-            }
+            // Live2D Cubism SDK 集成后取消注释以启用的 SetParameterValue 调用
         }
 
         /// <summary>

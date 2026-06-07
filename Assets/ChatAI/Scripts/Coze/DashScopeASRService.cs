@@ -83,7 +83,6 @@ namespace ChatAI.Coze
                 else
                 {
                     string responseText = request.downloadHandler.text;
-                    Debug.Log($"[DashScopeASR] 识别响应: {responseText}");
 
                     string transcript = ParseTranscription(responseText);
                     if (!string.IsNullOrEmpty(transcript))

@@ -19,7 +19,7 @@ namespace ChatAI.DebugTools
         public CozeChatService ChatService { get; private set; }
         public DashScopeASRService ASRService { get; private set; }
         public DashScopeTTSService TTSService { get; private set; }
-        public WakeWordDetector WakeWord { get; private set; }
+        public IWakeWordDetector WakeWord { get; private set; }
         public CozeConfig Config => cozeConfig;
 
         private void Awake()
@@ -65,9 +65,42 @@ namespace ChatAI.DebugTools
             if (!string.IsNullOrEmpty(voiceName))
                 TTSService.SetVoice(voiceName);
 
-            // 创建唤醒词检测器（仅 Windows 平台有效）
-            var wakeGo = new GameObject("[WakeWordDetector]");
-            WakeWord = wakeGo.AddComponent<WakeWordDetector>();
+            // 创建唤醒词检测器
+            // Windows 默认使用 KeywordRecognizer，勾选 useVoskEverywhere 后强制使用 Vosk
+            // 非 Windows 平台始终使用 Vosk
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+            bool forceVosk = cozeConfig.useVoskEverywhere;
+#else
+            bool forceVosk = true;
+#endif
+            if (!forceVosk)
+            {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+                var wakeGo = new GameObject("[WakeWordDetector]");
+                var winWake = wakeGo.AddComponent<WakeWordDetector>();
+                if (cozeConfig.wakeKeywords != null && cozeConfig.wakeKeywords.Length > 0)
+                    winWake.SetKeywords(cozeConfig.wakeKeywords, cozeConfig.wakeWordConfidence);
+                if (cozeConfig.interruptKeywords != null && cozeConfig.interruptKeywords.Length > 0)
+                    winWake.SetInterruptKeywords(cozeConfig.interruptKeywords);
+                if (cozeConfig.sleepKeywords != null && cozeConfig.sleepKeywords.Length > 0)
+                    winWake.SetSleepKeywords(cozeConfig.sleepKeywords);
+                WakeWord = winWake;
+#endif
+            }
+            else
+            {
+                var wakeGo = new GameObject("[VoskWakeWordDetector]");
+                var voskWake = wakeGo.AddComponent<VoskWakeWordDetector>();
+                if (cozeConfig.wakeKeywords != null && cozeConfig.wakeKeywords.Length > 0)
+                    voskWake.SetKeywords(cozeConfig.wakeKeywords);
+                if (cozeConfig.interruptKeywords != null && cozeConfig.interruptKeywords.Length > 0)
+                    voskWake.SetInterruptKeywords(cozeConfig.interruptKeywords);
+                if (cozeConfig.sleepKeywords != null && cozeConfig.sleepKeywords.Length > 0)
+                    voskWake.SetSleepKeywords(cozeConfig.sleepKeywords);
+                if (!string.IsNullOrEmpty(cozeConfig.voskModelPath))
+                    voskWake.SetModelPath(cozeConfig.voskModelPath);
+                WakeWord = voskWake;
+            }
 
             UnityEngine.Debug.Log($"[Bootstrapper] 初始化完成，配置有效: {cozeConfig.IsValid()}, ASR/TTS Key: {!string.IsNullOrEmpty(cozeConfig.dashScopeApiKey)}");
         }

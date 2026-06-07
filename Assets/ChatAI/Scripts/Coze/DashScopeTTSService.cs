@@ -41,6 +41,7 @@ namespace ChatAI.Coze
         private bool _isQueueActive;
         private bool _playbackStarted;        // 本轮是否已触发过 OnPlaybackStarted
         private bool _queueStopRequested;     // 外部请求停止
+        private bool _stopped;                // StopSpeaking 后硬性阻止 QueueSpeak 重启队列
 
         // 预合成（Prefetch）：播放当前句时并行合成下一句
         private Coroutine _prefetchRoutine;
@@ -89,6 +90,7 @@ namespace ChatAI.Coze
                 return;
             }
 
+            _stopped = false;
             _sentenceQueue.Enqueue(text);
             _queueStopRequested = false;
             StartCoroutine(DrainQueueCoroutine());
@@ -107,11 +109,14 @@ namespace ChatAI.Coze
                 return;
             }
 
-            // 新句子入队时，无条件清除之前的停止请求标志
-            _queueStopRequested = false;
+            // 如果已被外部停止（如打断/休眠），忽略新的入队请求，防止队列重启
+            if (_stopped)
+            {
+                Debug.Log($"[DashScopeTTS] 已停止，忽略入队: \"{sentence.Substring(0, Math.Min(sentence.Length, 20))}...\"");
+                return;
+            }
 
             _sentenceQueue.Enqueue(sentence);
-            Debug.Log($"[DashScopeTTS] 句子入队 (队列={_sentenceQueue.Count}): \"{sentence}\"");
 
             // 如果当前没有在跑队列，启动它
             if (!_isQueueActive)
@@ -125,6 +130,7 @@ namespace ChatAI.Coze
         /// </summary>
         public void StopSpeaking()
         {
+            _stopped = true;
             _queueStopRequested = true;
             _sentenceQueue.Clear();
             _isQueueActive = false;
@@ -141,6 +147,15 @@ namespace ChatAI.Coze
             IsSynthesizing = false;
         }
 
+        /// <summary>
+        /// 重置停止状态，允许新的 TTS 入队（新一轮对话开始时调用）
+        /// </summary>
+        public void ResetForNewTurn()
+        {
+            _stopped = false;
+            _queueStopRequested = false;
+        }
+
         private IEnumerator SynthesizeAndPlayCoroutine(string text)
         {
             IsSynthesizing = true;
@@ -154,7 +169,6 @@ namespace ChatAI.Coze
 
             // 第一步：请求合成
             string jsonBody = BuildRequestBody(text);
-            Debug.Log($"[DashScopeTTS] 请求体: {jsonBody}");
             string audioUrl = null;
 
             using (var request = new UnityWebRequest(apiUrl, "POST"))
@@ -181,13 +195,11 @@ namespace ChatAI.Coze
                 }
 
                 string responseText = request.downloadHandler.text;
-                UnityEngine.Debug.Log($"[DashScopeTTS] 合成响应 (完整): {responseText}");
 
                 audioUrl = ExtractAudioUrl(responseText);
                 // DashScope 返回的 URL 可能是 http://，Unity 默认禁止不安全连接，转为 https
                 if (!string.IsNullOrEmpty(audioUrl) && audioUrl.StartsWith("http://"))
                     audioUrl = "https://" + audioUrl.Substring(7);
-                UnityEngine.Debug.Log($"[DashScopeTTS] 提取到的音频 URL: {audioUrl ?? "(null)"}");
                 if (string.IsNullOrEmpty(audioUrl))
                 {
                     string error = $"无法从响应中解析音频 URL: {responseText}";
@@ -199,8 +211,6 @@ namespace ChatAI.Coze
             }
 
             // 第二步：下载音频文件
-            Debug.Log($"[DashScopeTTS] 下载音频: {audioUrl}");
-
             using (var dlRequest = UnityWebRequestMultimedia.GetAudioClip(audioUrl, AudioType.MPEG))
             {
                 dlRequest.timeout = (int)timeout;
@@ -217,7 +227,6 @@ namespace ChatAI.Coze
                     var clip = DownloadHandlerAudioClip.GetContent(dlRequest);
                     if (clip != null)
                     {
-                        UnityEngine.Debug.Log($"[DashScopeTTS] 下载完成: 格式=MP3, 时长={clip.length:F1}s, 频率={clip.frequency}Hz, 声道={clip.channels}");
                         PlayClip(clip);
                     }
                     else
@@ -234,7 +243,6 @@ namespace ChatAI.Coze
                                 var wavClip = DownloadHandlerAudioClip.GetContent(wavRequest);
                                 if (wavClip != null)
                                 {
-                                    UnityEngine.Debug.Log($"[DashScopeTTS] WAV 下载完成: 时长={wavClip.length:F1}s");
                                     PlayClip(wavClip);
                                 }
                                 else
@@ -387,7 +395,6 @@ namespace ChatAI.Coze
                         _prefetchText = nextText;
                         _prefetchRoutine = StartCoroutine(
                             SynthesizeAndDownload(nextText, (c) => _prefetchClip = c));
-                        Debug.Log($"[DashScopeTTS] 预合成下一句: \"{nextText}\"");
                     }
                     else
                     {
@@ -439,7 +446,6 @@ namespace ChatAI.Coze
             }
 
             string jsonBody = BuildRequestBody(text);
-            Debug.Log($"[DashScopeTTS] 合成句子: \"{text}\"");
             string audioUrl = null;
 
             using (var request = new UnityWebRequest(apiUrl, "POST"))
@@ -504,9 +510,7 @@ namespace ChatAI.Coze
                 }
             }
 
-            if (resultClip != null)
-                Debug.Log($"[DashScopeTTS] 句子下载完成 ({resultClip.length:F1}s): \"{text}\"");
-            else
+            if (resultClip == null)
                 Debug.LogWarning($"[DashScopeTTS] 句子下载失败: \"{text}\"");
 
             onResult(resultClip);

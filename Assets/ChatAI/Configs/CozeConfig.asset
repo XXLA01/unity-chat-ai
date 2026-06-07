@@ -21,6 +21,19 @@ MonoBehaviour:
   asrModel: qwen3-asr-flash
   ttsModel: cosyvoice-v2
   ttsVoice: longxiaochun_v2
+  wakeKeywords:
+  - "\u4F60\u597D\u5C0F\u7AE5"
+  - "\u4F60\u597D \u5C0F\u7AE5"
+  - "\u5C0F\u7AE5\u5C0F\u7AE5"
+  interruptKeywords:
+  - "\u505C\u6B62"
+  - "\u505C\u4E00\u4E0B"
+  - "\u522B\u8BF4\u4E86"
+  - "\u95ED\u5634"
+  - "\u505C\u6B62\u56DE\u590D"
+  wakeWordConfidence: 2
+  voskModelPath: vosk-model-small-cn-0.22.zip
+  useVoskEverywhere: 0
   conversationTimeout: 30
   enableStreaming: 1
   requestTimeout: 30

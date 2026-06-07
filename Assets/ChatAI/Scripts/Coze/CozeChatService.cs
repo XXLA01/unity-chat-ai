@@ -225,7 +225,6 @@ namespace ChatAI.Coze
                 if (request.result == UnityWebRequest.Result.Success)
                 {
                     string responseText = request.downloadHandler.text;
-                    Debug.Log($"[CozeChat] 文件上传响应: {responseText}");
 
                     // 手动解析 file_id
                     string fileId = ExtractJsonValue(responseText, "id");
@@ -288,7 +287,6 @@ namespace ChatAI.Coze
                 requestBody.conversation_id = ConversationId;
 
             string jsonBody = JsonUtility.ToJson(requestBody);
-            Debug.Log($"[CozeChat] 发送音频消息: {jsonBody}");
 
             using (var request = new UnityWebRequest(config.GetChatUrl(), "POST"))
             {
@@ -385,9 +383,6 @@ namespace ChatAI.Coze
         private void OnSSEEvent(string eventType, string data)
         {
             if (string.IsNullOrEmpty(data) || data == "[DONE]") return;
-
-            // 调试日志：输出所有 SSE 事件
-            Debug.Log($"[CozeChat] SSE 事件: type={eventType}, data={data}");
 
             try
             {
