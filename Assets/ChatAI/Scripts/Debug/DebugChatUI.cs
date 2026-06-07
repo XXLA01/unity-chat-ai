@@ -711,6 +711,25 @@ namespace ChatAI.DebugTools
             return text.Trim();
         }
 
+        /// <summary>
+        /// 判断文本中指定位置的字符是否在括号（中文或英文）内部
+        /// 用于句子切分时避免在括号内的逗号处断句
+        /// </summary>
+        private bool IsInsideParentheses(string text, int index)
+        {
+            int cnDepth = 0;  // 中文括号嵌套深度
+            int enDepth = 0;  // 英文括号嵌套深度
+            for (int i = 0; i < index && i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '（') cnDepth++;
+                else if (c == '）') cnDepth = System.Math.Max(0, cnDepth - 1);
+                else if (c == '(') enDepth++;
+                else if (c == ')') enDepth = System.Math.Max(0, enDepth - 1);
+            }
+            return cnDepth > 0 || enDepth > 0;
+        }
+
         // ==================== 文字输入 ====================
 
         private void OnInputEndEdit(string text)
@@ -802,24 +821,50 @@ namespace ChatAI.DebugTools
                     SetStatus("AI 思考中，正在准备语音...", StatusThinking);
                 }
 
-                // 检测句子边界，将完整句子送入 TTS 队列
-                char[] sentenceEnds = { '。', '！', '？', '；', '～' };
+                // 智能句子切分：优先在强标点处断句，文本较长时在逗号处次级断句
+                // 注意：括号内的逗号不作为断句点（括号内容是动作描写，应整体跳过）
+                char[] strongEnds = { '。', '！', '？', '；', '～' };
+                char[] weakEnds = { '，', ',' };
+                const int MinCharsBeforeWeakSplit = 12; // 至少积累 N 字后才启用逗号断句
+
+                int unrevealedLen = _fullAIResponse.Length - _ttsRevealedLength;
+                int splitPos = -1;
+
+                // 第一轮：从末尾往前找强标点（强标点不受括号限制，括号内出现强标点很少见）
                 for (int i = _fullAIResponse.Length - 1; i >= _ttsRevealedLength; i--)
                 {
-                    if (System.Array.IndexOf(sentenceEnds, _fullAIResponse[i]) >= 0)
+                    if (System.Array.IndexOf(strongEnds, _fullAIResponse[i]) >= 0)
                     {
-                        // 找到句子边界：提取句子并入队
-                        string sentence = _fullAIResponse.Substring(_ttsRevealedLength, i - _ttsRevealedLength + 1);
-                        string cleaned = CleanTextForTTS(sentence);
-                        if (!string.IsNullOrEmpty(cleaned))
-                        {
-                            var tts = DebugChatBootstrapper.Instance?.TTSService;
-                            if (tts != null)
-                                tts.QueueSpeak(cleaned);
-                        }
-                        _ttsRevealedLength = i + 1;
+                        splitPos = i;
                         break;
                     }
+                }
+
+                // 第二轮：没有强标点且文本够长，尝试逗号次级断句（跳过括号内的逗号）
+                if (splitPos < 0 && unrevealedLen >= MinCharsBeforeWeakSplit)
+                {
+                    for (int i = _fullAIResponse.Length - 1; i >= _ttsRevealedLength; i--)
+                    {
+                        if (System.Array.IndexOf(weakEnds, _fullAIResponse[i]) >= 0
+                            && !IsInsideParentheses(_fullAIResponse, i))
+                        {
+                            splitPos = i;
+                            break;
+                        }
+                    }
+                }
+
+                if (splitPos >= 0)
+                {
+                    string sentence = _fullAIResponse.Substring(_ttsRevealedLength, splitPos - _ttsRevealedLength + 1);
+                    string cleaned = CleanTextForTTS(sentence);
+                    if (!string.IsNullOrEmpty(cleaned))
+                    {
+                        var tts = DebugChatBootstrapper.Instance?.TTSService;
+                        if (tts != null)
+                            tts.QueueSpeak(cleaned);
+                    }
+                    _ttsRevealedLength = splitPos + 1;
                 }
                 // 文字暂不显示，等 OnTTSSentenceStarted 回调时逐句显示
             }

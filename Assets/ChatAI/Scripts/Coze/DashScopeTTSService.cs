@@ -42,6 +42,11 @@ namespace ChatAI.Coze
         private bool _playbackStarted;        // 本轮是否已触发过 OnPlaybackStarted
         private bool _queueStopRequested;     // 外部请求停止
 
+        // 预合成（Prefetch）：播放当前句时并行合成下一句
+        private Coroutine _prefetchRoutine;
+        private AudioClip _prefetchClip;
+        private string _prefetchText;         // 预合成对应的文本（用于校验匹配）
+
         private void Start()
         {
             // 如果没有指定 AudioSource，自动创建一个
@@ -124,6 +129,8 @@ namespace ChatAI.Coze
             _sentenceQueue.Clear();
             _isQueueActive = false;
             _playbackStarted = false;
+            _prefetchClip = null;
+            _prefetchText = null;
 
             StopAllCoroutines();
 
@@ -266,7 +273,9 @@ namespace ChatAI.Coze
         // ==================== 队列驱动协程 ====================
 
         /// <summary>
-        /// 持续从队列中取出句子，逐句合成→下载→播放，直到队列清空或被外部停止
+        /// 持续从队列中取出句子，逐句合成→下载→播放，直到队列清空或被外部停止。
+        /// 优化：播放当前句时，并行预合成下一句，消除句间延迟。
+        /// 注意：预合成使用 Peek 而非 Dequeue，避免在 SSE 流式入队期间取出顺序错乱。
         /// </summary>
         private IEnumerator DrainQueueCoroutine()
         {
@@ -274,19 +283,86 @@ namespace ChatAI.Coze
             _isQueueActive = true;
             IsSynthesizing = true;
 
-            while (_sentenceQueue.Count > 0 && !_queueStopRequested)
+            while (!_queueStopRequested)
             {
-                string text = _sentenceQueue.Dequeue();
-
-                // 合成 + 下载，得到 AudioClip
+                string text = null;
                 AudioClip clip = null;
-                yield return SynthesizeAndDownload(text, (c) => clip = c);
+
+                if (_sentenceQueue.Count > 0)
+                {
+                    // 检查预合成结果是否与队列头部匹配（队列可能因 SSE 流式入队而变化）
+                    if (_prefetchClip != null && _sentenceQueue.Peek() == _prefetchText)
+                    {
+                        text = _sentenceQueue.Dequeue();
+                        clip = _prefetchClip;
+                        _prefetchClip = null;
+                        _prefetchText = null;
+                        Debug.Log("[DashScopeTTS] 使用预合成音频");
+                    }
+                    else
+                    {
+                        // 预合成不匹配或不存在：丢弃旧预合成，同步合成当前句
+                        if (_prefetchClip != null)
+                        {
+                            Debug.Log("[DashScopeTTS] 预合成文本不匹配，丢弃预合成结果，重新合成");
+                            _prefetchClip = null;
+                            _prefetchText = null;
+                        }
+
+                        text = _sentenceQueue.Dequeue();
+                        yield return SynthesizeAndDownload(text, (c) => clip = c);
+                    }
+                }
+                else
+                {
+                    // 队列为空：尝试等待预合成完成
+                    if (_prefetchRoutine != null)
+                    {
+                        yield return _prefetchRoutine;
+                        _prefetchRoutine = null;
+
+                        if (_prefetchClip != null
+                            && _sentenceQueue.Count > 0
+                            && _sentenceQueue.Peek() == _prefetchText)
+                        {
+                            text = _sentenceQueue.Dequeue();
+                            clip = _prefetchClip;
+                            _prefetchClip = null;
+                            _prefetchText = null;
+                            Debug.Log("[DashScopeTTS] 使用预合成音频（等待后）");
+                        }
+                        else if (_prefetchClip != null)
+                        {
+                            // 预合成完成但队列内容已变化，丢弃
+                            Debug.Log("[DashScopeTTS] 预合成文本不匹配（等待后），丢弃预合成结果");
+                            _prefetchClip = null;
+                            _prefetchText = null;
+                        }
+                    }
+
+                    // 仍然没有可播放的内容，检查是否需要继续等待
+                    if (clip == null)
+                    {
+                        if (audioSource != null && audioSource.isPlaying)
+                        {
+                            // 上一段还在播，等它播完再检查
+                            while (audioSource != null && audioSource.isPlaying)
+                                yield return null;
+                            continue;
+                        }
+                        else
+                        {
+                            // 没有音频在播，也没有预合成，队列结束
+                            break;
+                        }
+                    }
+                }
 
                 if (_queueStopRequested) break;
 
                 if (clip != null)
                 {
-                    // 如果上一段还在播，等它播完
+                    // 等上一段播完
                     while (audioSource != null && audioSource.isPlaying)
                         yield return null;
 
@@ -301,8 +377,33 @@ namespace ChatAI.Coze
 
                     // 通知 UI 层：这个句子的语音开始播放了，可以显示文字
                     OnSentencePlaybackStarted?.Invoke(text);
+
+                    // ===== 预合成下一句（Peek 不取出，保证队列顺序不变） =====
+                    _prefetchClip = null;
+                    _prefetchText = null;
+                    if (_sentenceQueue.Count > 0 && !_queueStopRequested)
+                    {
+                        string nextText = _sentenceQueue.Peek();
+                        _prefetchText = nextText;
+                        _prefetchRoutine = StartCoroutine(
+                            SynthesizeAndDownload(nextText, (c) => _prefetchClip = c));
+                        Debug.Log($"[DashScopeTTS] 预合成下一句: \"{nextText}\"");
+                    }
+                    else
+                    {
+                        _prefetchRoutine = null;
+                    }
                 }
             }
+
+            // 清理预合成协程
+            if (_prefetchRoutine != null)
+            {
+                StopCoroutine(_prefetchRoutine);
+                _prefetchRoutine = null;
+            }
+            _prefetchClip = null;
+            _prefetchText = null;
 
             // 等待最后一个片段播完
             while (audioSource != null && audioSource.isPlaying)
