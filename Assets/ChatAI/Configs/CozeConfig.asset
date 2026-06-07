@@ -1,0 +1,27 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c85f2fb467d94234684a931f552c9e7d, type: 3}
+  m_Name: CozeConfig
+  m_EditorClassIdentifier: 
+  apiToken: pat_H1QqMCEp38eySHglzOf8ds2E9D5wurkWvc0UIreQ3Xo3IUKMaUGzwUuGGz72ReYZ
+  botId: 7646429672091385907
+  apiBaseUrl: https://api.coze.cn
+  userId: xxl
+  audioSampleRate: 16000
+  dashScopeApiKey: sk-166b7ff9ce7c4ef5a0d62d3b1d9f0f82
+  asrModel: qwen3-asr-flash
+  ttsModel: cosyvoice-v2
+  ttsVoice: longxiaochun_v2
+  conversationTimeout: 30
+  enableStreaming: 1
+  requestTimeout: 30
+  maxRetryCount: 3
