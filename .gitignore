@@ -26,4 +26,4 @@ Assets/AssetStoreTools*
 Assets/ChatAI/Configs/CozeConfig.asset
 
 # Large model files
-Assets/StreamingAssets/*.zip
+Assets/StreamingAssets/vosk-model-cn-0.22.zip
